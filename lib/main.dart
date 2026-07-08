@@ -15,7 +15,7 @@ void main() async {
     runApp(
       const _ConfigurationErrorApp(
         message:
-            'Faltan SUPABASE_URL y SUPABASE_ANON_KEY. Ejecuta la app con dart-define para poder conectarla.',
+            'Faltan SUPABASE_URL y SUPABASE_ANON_KEY.',
       ),
     );
     return;

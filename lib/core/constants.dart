@@ -23,4 +23,6 @@ class AppConfig {
 			supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
 
 	static bool get hasGeminiCredentials => geminiApiKey.isNotEmpty;
-}
+} 
+
+
