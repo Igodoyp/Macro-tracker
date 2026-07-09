@@ -266,58 +266,62 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _showWeightDialog(BuildContext context) async {
     final weightController = TextEditingController();
 
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Registrar Peso de Hoy'),
-        content: TextField(
-          controller: weightController,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-            labelText: 'Peso en kg',
-            hintText: 'Ej. 75.5',
-            border: OutlineInputBorder(),
-            suffixText: 'kg',
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Registrar Peso de Hoy'),
+          content: TextField(
+            controller: weightController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'Peso en kg',
+              hintText: 'Ej. 75.5',
+              border: OutlineInputBorder(),
+              suffixText: 'kg',
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final weight = double.tryParse(weightController.text);
+
+                if (weight == null) {
+                  return;
+                }
+
+                try {
+                  await widget.repository.logDailyWeight(weight);
+                  if (!mounted) {
+                    return;
+                  }
+
+                  Navigator.pop(dialogContext);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Peso registrado: ${formatOneDecimal(weight)} kg')),
+                  );
+                } catch (error) {
+                  if (!mounted) {
+                    return;
+                  }
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('No se pudo guardar el peso: $error')),
+                  );
+                }
+              },
+              child: const Text('Guardar'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final weight = double.tryParse(weightController.text);
-
-              if (weight == null) {
-                return;
-              }
-
-              try {
-                await widget.repository.logDailyWeight(weight);
-                if (!mounted) {
-                  return;
-                }
-
-                Navigator.pop(dialogContext);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Peso registrado: ${formatOneDecimal(weight)} kg')),
-                );
-              } catch (error) {
-                if (!mounted) {
-                  return;
-                }
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('No se pudo guardar el peso: $error')),
-                );
-              }
-            },
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
+      );
+      } finally { // <-- AGREGAR ESTO
+      weightController.dispose();
+    }
   }
 
   Future<void> _showMacroGoalsDialog() async {
@@ -474,141 +478,238 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Uint8List? imageBytes;
     String? imageName;
     String imageMimeType = 'image/jpeg';
+    
 
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            Future<void> pickImage() async {
-              final pickedImage = await _imagePicker.pickImage(source: ImageSource.gallery);
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (sheetContext) {
+          return StatefulBuilder(
+            builder: (sheetContext, setSheetState) {
+              Future<void> pickImage() async {
+                final pickedImage = await _imagePicker.pickImage(source: ImageSource.gallery);
 
-              if (pickedImage == null) {
-                return;
+                if (pickedImage == null) {
+                  return;
+                }
+
+                imageBytes = await pickedImage.readAsBytes();
+                imageName = pickedImage.name;
+                imageMimeType = _guessImageMimeType(pickedImage.name);
+
+                setSheetState(() {});
               }
 
-              imageBytes = await pickedImage.readAsBytes();
-              imageName = pickedImage.name;
-              imageMimeType = _guessImageMimeType(pickedImage.name);
+              Future<void> analyzeAndSaveMeal() async {
+                final prompt = promptController.text.trim();
 
-              setSheetState(() {});
-            }
-
-            Future<void> analyzeAndSaveMeal() async {
-              final prompt = promptController.text.trim();
-
-              if (prompt.isEmpty && imageBytes == null) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Escribe algo o adjunta una foto.')),
-                );
-                return;
-              }
-
-              setSheetState(() {
-                _isSubmitting = true;
-              });
-
-              try {
-                final analysis = await widget.mealAnalysisService.analyzeMeal(
-                  prompt: prompt.isEmpty ? null : prompt,
-                  imageBytes: imageBytes,
-                  imageMimeType: imageMimeType,
-                );
-
-                await widget.repository.insertMeal(analysis);
-
-                if (!mounted) {
+                if (prompt.isEmpty && imageBytes == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Escribe algo o adjunta una foto.')),
+                  );
                   return;
                 }
 
-                Navigator.pop(sheetContext);
-                await _loadDashboard();
-                if (!mounted) {
-                  return;
-                }
+                setSheetState(() {
+                  _isSubmitting = true;
+                });
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Comida guardada: ${analysis['description'] ?? 'resultado de Gemini'}',
-                    ),
-                  ),
-                );
-              } catch (error) {
-                if (!mounted) {
-                  return;
-                }
+                try {
+                  // --- PASO 1: Agente de Percepción ---
+                  final perceptionResult = await widget.mealAnalysisService.analyzeMeal(
+                    prompt: prompt.isEmpty ? null : prompt,
+                    imageBytes: imageBytes,
+                    imageMimeType: imageMimeType,
+                  );
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('No se pudo analizar la comida: $error')),
-                );
-              } finally {
-                if (mounted) {
-                  setState(() {
+                  final List<dynamic> alimentosDetectados = perceptionResult['alimentos'] ?? [];
+
+                  if (alimentosDetectados.isEmpty) {
+                    throw Exception('No se detectaron alimentos claros en la imagen o texto.');
+                  }
+
+                  // Extraer los nombres de los alimentos detectados
+                  final List<String> nombresParaMacros = alimentosDetectados
+                      .map((item) => item['name'] as String)
+                      .toList();
+
+                  // --- PASO 2: Agente de Nutrición ---
+                  final geminiService = widget.mealAnalysisService as GeminiNutritionService;
+                  final macrosPor100g = await geminiService.analyzeNutrition(nombresParaMacros);
+                  final macrosReales = macrosPor100g['resultados'] ?? macrosPor100g;
+
+                  print('=== NOMBRES BUSCADOS ===');
+                  print(nombresParaMacros);
+                  print('=== RESPUESTA DE GEMINI ===');
+                  print(macrosReales);
+
+                  // --- PASO 3: Fusión y Matemática ---
+                  double totalProteinas = 0;
+                  double totalCarbohidratos = 0;
+                  double totalGrasas = 0;
+                  double totalCalorias = 0;
+                  List<String> descripciones = [];
+                  
+                  for (var alimento in alimentosDetectados) {
+                    final nombre = alimento['name'];
+                    final gramos = asDouble(alimento['grams']);
+                    final factorMultiplicador = gramos / 100; 
+                    
+                    descripciones.add('$nombre (${gramos.toInt()}g)');
+
+                    if (macrosReales.containsKey(nombre)) {
+                      final macros = macrosReales[nombre];
+                      // CORRECCIÓN 1: Usamos las llaves exactas que devuelve el agente de nutrición
+                      totalProteinas += asDouble(macros['protein']) * factorMultiplicador;
+                      totalCarbohidratos += asDouble(macros['carbs']) * factorMultiplicador;
+                      totalGrasas += asDouble(macros['fats']) * factorMultiplicador;
+                      totalCalorias += asDouble(macros['calories']) * factorMultiplicador;
+                    }
+                  }
+
+                  // --- PASO 4: Construir el objeto para Supabase ---
+                  final finalMealAnalysis = {
+                    'description': descripciones.join(', '),
+                    'protein': totalProteinas,
+                    'carbs': totalCarbohidratos,
+                    'fats': totalGrasas,
+                    'calories': totalCalorias.toInt(),
+                  };
+
+                  // Guardar en base de datos
+                  await widget.repository.insertMeal(finalMealAnalysis);
+
+                  // CORRECCIÓN 2: Apagamos el estado de carga ANTES de destruir la ventana modal
+                  setSheetState(() {
                     _isSubmitting = false;
                   });
-                }
-              }
-            }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                top: 4,
-                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    'Añadir comida con IA',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: promptController,
-                    minLines: 2,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                      labelText: 'Describe la comida',
-                      hintText: 'Ej. 2 huevos revueltos con pan integral y café',
-                      border: OutlineInputBorder(),
+                  if (!mounted) return;
+                  Navigator.pop(sheetContext); // Aquí se destruye la ventana
+                  await _loadDashboard();
+                  
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Comida guardada: ${finalMealAnalysis['description']}')),
+                  );
+
+                } catch (error) {
+                  if (!mounted) return;
+                  
+                  // Si hay error, apagamos el estado de carga aquí sin destruir la ventana
+                  setSheetState(() {
+                    _isSubmitting = false;
+                  });
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('No se pudo analizar la comida: $error')),
+                  );
+                }
+                // ELIMINAMOS EL BLOQUE FINALLY POR COMPLETO
+              }
+
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 4,
+                  bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'Añadir comida con IA',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _isSubmitting ? null : pickImage,
-                    icon: const Icon(Icons.photo_library_outlined),
-                    label: const Text('Adjuntar foto'),
-                  ),
-                  if (imageName != null) ...[
-                    const SizedBox(height: 8),
-                    Text('Archivo seleccionado: $imageName'),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: promptController,
+                      minLines: 2,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        labelText: 'Describe la comida',
+                        hintText: 'Ej. 2 huevos revueltos con pan integral y café',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: _isSubmitting ? null : pickImage,
+                      icon: const Icon(Icons.photo_library_outlined),
+                      label: const Text('Adjuntar foto'),
+                    ),
+                    if (imageName != null) ...[
+                      const SizedBox(height: 8),
+                      Text('Archivo seleccionado: $imageName'),
+                    ],
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: _isSubmitting ? null : analyzeAndSaveMeal,
+                      icon: _isSubmitting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.auto_fix_high_rounded),
+                      label: Text(_isSubmitting ? 'Analizando...' : 'Analizar y guardar'),
+                    ),
                   ],
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: _isSubmitting ? null : analyzeAndSaveMeal,
-                    icon: _isSubmitting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.auto_fix_high_rounded),
-                    label: Text(_isSubmitting ? 'Analizando...' : 'Analizar y guardar'),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
+                ),
+              );
+            },
+          );
+        },
+      );
+      } finally { // <-- AGREGAR ESTO
+      promptController.dispose();
+    }
   }
+
+  Future<void> _showAddMealOptions() async {
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (BuildContext context) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 24.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '¿Qué vas a registrar?',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.restaurant_rounded, size: 32),
+              title: const Text('Plato de comida'),
+              subtitle: const Text('Usa una foto o texto (Ej: 2 huevos y pan)'),
+              onTap: () {
+                Navigator.pop(context);
+                _showMealComposer(); // El flujo de los agentes 1 y 2
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.document_scanner_outlined, size: 32),
+              title: const Text('Etiqueta Nutricional'),
+              subtitle: const Text('Escanea el empaque de un producto'),
+              onTap: () {
+                Navigator.pop(context);
+                _showLabelScanner(); // El flujo de los agentes 3 y 4
+              },
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
 
   String _guessImageMimeType(String fileName) {
     final lowerName = fileName.toLowerCase();
@@ -622,6 +723,151 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     return 'image/jpeg';
+  }
+
+  Future<void> _showLabelScanner() async {
+    // 1. Correctamente indentado hacia la derecha (dentro de la función)
+    final contextController = TextEditingController();
+    final gramsController = TextEditingController();
+    Uint8List? imageBytes;
+    String imageMimeType = 'image/jpeg';
+
+    // 2. Envolvemos el modal en un try/finally para limpiar la memoria al salir
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (sheetContext) {
+          return StatefulBuilder(
+            builder: (sheetContext, setSheetState) {
+              
+              Future<void> pickLabelImage() async {
+                final pickedImage = await _imagePicker.pickImage(source: ImageSource.gallery);
+                if (pickedImage == null) return;
+                imageBytes = await pickedImage.readAsBytes();
+                imageMimeType = _guessImageMimeType(pickedImage.name);
+                setSheetState(() {});
+              }
+
+              Future<void> analyzeAndSaveLabel() async {
+                final labelContext = contextController.text.trim();
+                final gramsConsumed = double.tryParse(gramsController.text.trim());
+
+                if (imageBytes == null || labelContext.isEmpty || gramsConsumed == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Falta la foto, el nombre o los gramos.')),
+                  );
+                  return;
+                }
+
+                setSheetState(() => _isSubmitting = true);
+
+                try {
+                  final geminiService = widget.mealAnalysisService as GeminiNutritionService;
+
+                  final results = await Future.wait([
+                    geminiService.analyzeNutritionLabel(imageBytes!, imageMimeType),
+                    geminiService.labelContextAnalysis(labelContext),
+                  ]);
+
+                  final ocrData = results[0];
+                  final contextData = results[1];
+
+                  final multiplicador = gramsConsumed / 100;
+                  final nombreFinal = '${contextData['brand'] ?? ''} ${contextData['category'] ?? ''} ${contextData['variant'] ?? ''}'.trim();
+
+                  final finalMealAnalysis = {
+                    'description': '$nombreFinal (${gramsConsumed.toInt()}g)',
+                    'protein': asDouble(ocrData['protein_per_100g']) * multiplicador,
+                    'carbs': asDouble(ocrData['carbs_per_100g']) * multiplicador,
+                    'fats': asDouble(ocrData['fats_per_100g']) * multiplicador,
+                    'calories': (asDouble(ocrData['calories_per_100g']) * multiplicador).toInt(),
+                  };
+
+                  await widget.repository.insertMeal(finalMealAnalysis);
+
+                  setSheetState(() {
+                    _isSubmitting = false;
+                  });
+
+                  if (!mounted) return;
+                  Navigator.pop(sheetContext);
+                  await _loadDashboard();
+                  
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Producto guardado: $nombreFinal')),
+                  );
+
+                } catch (error) {
+                  if (!mounted) return;
+                  
+                  setSheetState(() {
+                    _isSubmitting = false;
+                  });
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Fallo en el escáner: $error')),
+                  );
+                }
+              }
+
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: 16, right: 16, top: 4,
+                  bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text('Escanear Etiqueta', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: contextController,
+                      decoration: const InputDecoration(
+                        labelText: '¿Qué producto es?',
+                        hintText: 'Ej: Yogurt Soprole Proteína Fresa',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: gramsController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '¿Cuántos gramos/ml consumiste?',
+                        border: OutlineInputBorder(),
+                        suffixText: 'g/ml',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: _isSubmitting ? null : pickLabelImage,
+                      icon: const Icon(Icons.camera_alt_outlined),
+                      label: Text(imageBytes == null ? 'Tomar foto a la etiqueta' : 'Cambiar foto'),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: _isSubmitting ? null : analyzeAndSaveLabel,
+                      icon: _isSubmitting 
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.qr_code_scanner_rounded),
+                      label: Text(_isSubmitting ? 'Procesando...' : 'Escanear y Guardar'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      // 3. Cuando el modal se cierra (ya sea guardando o tocando afuera), limpiamos los controladores
+      contextController.dispose();
+      gramsController.dispose();
+    }
   }
 
   Widget _buildSummaryCard(ThemeData theme) {
@@ -881,8 +1127,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         centerTitle: true,
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isLoading ? null : _showMealComposer,
-        icon: const Icon(Icons.camera_alt_rounded),
+        onPressed: _isLoading ? null : _showAddMealOptions, // Cambiado aquí
+        icon: const Icon(Icons.add_rounded),
         label: const Text('Añadir comida'),
       ),
       body: RefreshIndicator(
@@ -965,11 +1211,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 12),
               _buildActionCard(
                 context: context,
-                icon: Icons.camera_alt_rounded,
-                title: 'Añadir Comida con IA',
-                subtitle: 'Usa una foto o escribe lo que comiste',
+                icon: Icons.add_rounded, // Puedes cambiar el ícono a algo más general
+                title: 'Añadir Comida',
+                subtitle: 'Escanea códigos, usa fotos o texto',
                 color: theme.colorScheme.primaryContainer,
-                onTap: _showMealComposer,
+                onTap: _showAddMealOptions, // <-- AHORA ABRE EL MENÚ NUEVO
               ),
               const SizedBox(height: 12),
               _buildActionCard(

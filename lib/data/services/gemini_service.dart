@@ -72,9 +72,7 @@ class GeminiNutritionService implements MealAnalysisService {
     if (parts.length == 1 && imageBytes != null && (prompt == null || prompt.isEmpty)) {
       parts.insert(
         0,
-        TextPart(
-          'Analiza la foto de la comida y estima proteínas, carbohidratos, grasas, calorías y un nombre resumido del plato.',
-        ),
+        TextPart('Identifica los alimentos de esta imagen y estima sus porciones en gramos.'),
       );
     }
 

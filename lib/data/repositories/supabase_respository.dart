@@ -44,6 +44,7 @@ class NutritionRepository implements NutritionRepositoryBase {
 
   @override
   Future<void> insertMeal(Map<String, dynamic> mealData) async {
+    final localDate = DateTime.now().toIso8601String().substring(0, 10);
     await _supabase.from('meals').insert({
       'user_id': _currentUserId,
       'description': mealData['description'],
@@ -51,6 +52,7 @@ class NutritionRepository implements NutritionRepositoryBase {
       'carbs': mealData['carbs'],
       'fats': mealData['fats'],
       'calories': mealData['calories'],
+      'local_date': localDate,
       'created_at': DateTime.now().toIso8601String(),
     });
   }
@@ -63,8 +65,7 @@ class NutritionRepository implements NutritionRepositoryBase {
         .from('meals')
         .select()
         .eq('user_id', _currentUserId)
-        .gte('created_at', '${today}T00:00:00')
-        .lte('created_at', '${today}T23:59:59');
+        .eq('local_date', today);
 
     return List<Map<String, dynamic>>.from(response);
   }
